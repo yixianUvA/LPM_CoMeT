@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # CoMeT -- Integrated Core and Memory Thermal simulator
 
 With the growing power density in both processors and memories (esp. 3D), thermal issues significantly impact application performance. Thus, increasingly researchers have become interested in understanding the performance, power, and thermal effects of the proposed changes in hardware and software.
@@ -182,3 +183,7 @@ python3 floorplanlib/create.py \
 - Test summary
 	- The complete summary of the running the test suite is written to a file named test\_summary.
 	- Also, some logs are printed during the execution of test\_suite.
+=======
+# LPM_CoMeT
+unified core and memory power regulation
+>>>>>>> b415d95bf4becf05f6636a3d8569976b8fa6a431

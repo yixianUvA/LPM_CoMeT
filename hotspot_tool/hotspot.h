@@ -2,6 +2,7 @@
 #define __HOTSPOT_H_
 
 #include "util.h"
+int banks_nr;
 
 /* global configuration parameters for HotSpot	*/
 typedef struct global_config_t_st
@@ -10,17 +11,23 @@ typedef struct global_config_t_st
 	char flp_file[STR_SIZE];
 	/* input power trace file */
 	char p_infile[STR_SIZE];
+	/* output power trace file */
+	char p_outfile[STR_SIZE];
 	/* output file for the temperature trace */
 	char t_outfile[STR_SIZE];
 	/* input configuration parameters from file	*/
 	char config[STR_SIZE];
 	/* output configuration parameters to file	*/
 	char dump_config[STR_SIZE];
+	/* input file of bank power modes */
+	char bm_infile[STR_SIZE];
 
 	
 	/*BU_3D: Option to turn on heterogenous R-C assignment*/
 	char detailed_3D[STR_SIZE];
 	
+	/* output file for the RC thermal model */
+	char RC_model_outfile[STR_SIZE];
 }global_config_t;
 
 /* 

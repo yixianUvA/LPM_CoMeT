@@ -39,6 +39,32 @@ double PerformanceCounters::getPowerOfComponent (string component) const {
 	return -1;
 }
 
+/** getPowerOfAllComponents
+    Returns the power consumption of all components together with their name.
+*/
+map<string, double> PerformanceCounters::getPowerOfAllComponents () const {
+	map<string, double> instPower;
+	ifstream powerLogFile(instPowerFileName);
+	string header;
+	string footer;
+
+	if (powerLogFile.good()) {
+		getline(powerLogFile, header);
+		getline(powerLogFile, footer);
+	}
+
+	std::istringstream issHeader(header);
+	std::istringstream issFooter(footer);
+	std::string token;
+
+	while(getline(issHeader, token, '\t')) {
+		std::string value;
+		getline(issFooter, value, '\t');
+		instPower.insert(std::pair<string, double>(token,stod(value)));
+	}
+	return instPower;
+}
+
 /** getPowerOfCore
  * Return the latest total power consumption of the given core. Requires "tp" (total power) to be tracked in base.cfg. Return -1 if power is not tracked.
  */
@@ -66,10 +92,80 @@ double PerformanceCounters::getPeakTemperature () const {
 	double maxTemp = -1;
 	std::string value;
 	while(getline(issFooter, value, '\t')) {
+		//std::cout << "issFooter is " << issFooter << std::endl;
+		//std::cout << "*** Test header is " << header << std::endl;
 		double t = stod (value);
 		if (t > maxTemp) {
 			maxTemp = t;
 		}
+	}
+
+	return maxTemp;
+}
+
+/** getCorePeakTemperature
+    Returns the latest peak temperature of any component
+*/
+double PerformanceCounters::getCorePeakTemperature () const {
+	ifstream temperatureLogFile(instTemperatureFileName);
+	string header;
+	string footer;
+
+	if (temperatureLogFile.good()) {
+		getline(temperatureLogFile, header);
+		getline(temperatureLogFile, footer);
+	}
+
+	std::istringstream issFooter(footer);
+	std::istringstream issHeader(header);
+
+	double maxTemp = -1;
+	std::string value;
+	std::string name;
+	while(getline(issFooter, value, '\t')) {
+		//std::cout << "issFooter is " << issFooter << std::endl;
+		//std::cout << "*** Test header is " << header << std::endl;
+		getline(issHeader, name,'\t');
+		if(name.find("C_") != string::npos){
+			double t = stod (value);
+			if (t > maxTemp) {
+				maxTemp = t;
+			}
+		}		
+	}
+
+	return maxTemp;
+}
+
+/** getMemPeakTemperature
+    Returns the latest peak temperature of any component
+*/
+double PerformanceCounters::getMemPeakTemperature () const {
+	ifstream temperatureLogFile(instTemperatureFileName);
+	string header;
+	string footer;
+
+	if (temperatureLogFile.good()) {
+		getline(temperatureLogFile, header);
+		getline(temperatureLogFile, footer);
+	}
+
+	std::istringstream issFooter(footer);
+	std::istringstream issHeader(header);
+
+	double maxTemp = -1;
+	std::string value;
+	std::string name;
+	while(getline(issFooter, value, '\t')) {
+		//std::cout << "issFooter is " << issFooter << std::endl;
+		//std::cout << "*** Test header is " << header << std::endl;
+		getline(issHeader, name,'\t');
+		if(name.find("B_") != string::npos){
+			double t = stod (value);
+			if (t > maxTemp) {
+				maxTemp = t;
+			}
+		}		
 	}
 
 	return maxTemp;
@@ -109,6 +205,14 @@ double PerformanceCounters::getTemperatureOfComponent (string component) const {
  */
 double PerformanceCounters::getTemperatureOfCore(int coreId) const {
 	string component = "C_" + std::to_string(coreId);
+	return getTemperatureOfComponent(component);
+}
+
+/** getTemperatureOfBank
+ * Return the latest temperature of the given memory bank. Requires "tp" (total power) to be tracked in base.cfg. Return -1 if power is not tracked.
+ */
+double PerformanceCounters::getTemperatureOfBank(int bankId) const {
+	string component = "B_" + std::to_string(bankId);
 	return getTemperatureOfComponent(component);
 }
 

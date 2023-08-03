@@ -4,8 +4,8 @@
  * temperature values to an output trace file. It also outputs the steady 
  * state temperature values to stdout.
  */
-#include <stdio.h>
-#include <stdlib.h>
+#include <stdio.h> 
+#include <stdlib.h> 
 #include <assert.h>
 #include <string.h>
 #include <ctype.h>
@@ -72,6 +72,7 @@ void usage(int argc, char **argv)
   fprintf(stdout, "            \tlayer configuration file (e.g. layer.lcf) when the\n");
   fprintf(stdout, "            \tlatter is specified\n");
   fprintf(stdout, "   -p <file>\tpower trace input file (e.g. gcc.ptrace)\n");
+  fprintf(stdout, "  [-bm <file>]\tmemory bank mode trace file. Necessary for dram low power mode.\n");
   fprintf(stdout, "  [-o <file>]\ttransient temperature trace output file - if not provided, only\n");
   fprintf(stdout, "            \tsteady state temperatures are output to stdout\n");
   fprintf(stdout, "  [-c <file>]\tinput configuration parameters from file (e.g. hotspot.config)\n");
@@ -82,6 +83,7 @@ void usage(int argc, char **argv)
   fprintf(stdout, "           \toverride the options from config file. e.g. \"-model_type block\" selects\n");
   fprintf(stdout, "           \tthe block model while \"-model_type grid\" selects the grid model\n");
   fprintf(stdout, "  [-detailed_3D <on/off]>\tHeterogeneous R-C assignments for specified layers. Requires a .lcf file to be specified\n"); //BU_3D: added detailed_3D option
+  fprintf(stdout, "  [-print_RC_model <file>]\toutput RC thermal model to file\n");
 }
 
 /* 
@@ -107,6 +109,14 @@ void global_config_from_strs(global_config_t *config, str_pair *table, int size)
   } else {
       fatal("required parameter p_infile missing. check usage\n");
   }
+ 
+ if ((idx = get_str_index(table, size, "t")) >= 0) {
+      if(sscanf(table[idx].value, "%s", config->p_outfile) != 1)
+        fatal("invalid format for configuration  parameter p_outfile\n");
+  } else {
+      fatal("required parameter p_outfile missing. check usage\n");
+  }
+
   if ((idx = get_str_index(table, size, "o")) >= 0) {
       if(sscanf(table[idx].value, "%s", config->t_outfile) != 1)
         fatal("invalid format for configuration  parameter t_outfile\n");
@@ -133,7 +143,12 @@ void global_config_from_strs(global_config_t *config, str_pair *table, int size)
   } else {
       strcpy(config->detailed_3D, "off");
   }
-  
+  if ((idx = get_str_index(table, size, "print_RC_model")) >= 0) {
+      if(sscanf(table[idx].value, "%s", config->RC_model_outfile) != 1)
+        fatal("invalid format for configuration  parameter print_RC_model\n");
+  } else {
+      strcpy(config->RC_model_outfile, NULLFILE);
+  }
 
   if ((idx = get_str_index(table, size, "l")) >= 0) {
       printf("idx = %u\n", idx);
@@ -154,6 +169,13 @@ void global_config_from_strs(global_config_t *config, str_pair *table, int size)
        strcpy(volt_vector, "");
    }
 
+  if ((idx = get_str_index(table, size, "bm")) >= 0) {
+      if(sscanf(table[idx].value, "%s", config->bm_infile) != 1)
+        fatal("invalid format for configuration  parameter bm_infile\n");
+  } else {
+      strcpy(config->bm_infile, NULLFILE);
+  }
+
 
 }
 
@@ -163,26 +185,32 @@ void global_config_from_strs(global_config_t *config, str_pair *table, int size)
  */
 int global_config_to_strs(global_config_t *config, str_pair *table, int max_entries)
 {
-  if (max_entries < 7)
+  if (max_entries < 10)
     fatal("not enough entries in table\n");
 
   sprintf(table[0].name, "f");
   sprintf(table[1].name, "p");
-  sprintf(table[2].name, "o");
-  sprintf(table[3].name, "c");
-  sprintf(table[4].name, "d");
-  sprintf(table[5].name, "detailed_3D");
-  sprintf(table[6].name, "l");
+  sprintf(table[2].name, "t");
+  sprintf(table[3].name, "o");
+  sprintf(table[4].name, "c"); 
+  sprintf(table[5].name, "d");
+  sprintf(table[6].name, "detailed_3D");
+  sprintf(table[7].name, "print_RC_model");
+  sprintf(table[8].name, "l");
+  sprintf(table[10].name, "bm");
   sprintf(table[0].value, "%s", config->flp_file);
   sprintf(table[1].value, "%s", config->p_infile);
-  sprintf(table[2].value, "%s", config->t_outfile);
-  sprintf(table[3].value, "%s", config->config);
-  sprintf(table[4].value, "%s", config->dump_config);
-  sprintf(table[5].value, "%s", config->detailed_3D);
-  sprintf(table[6].value, "%s", leakage_vector);
-  sprintf(table[7].value, "%s", volt_vector);
+  sprintf(table[2].value, "%s", config->p_outfile);
+  sprintf(table[3].value, "%s", config->t_outfile);
+  sprintf(table[4].value, "%s", config->config);
+  sprintf(table[5].value, "%s", config->dump_config);
+  sprintf(table[6].value, "%s", config->detailed_3D);
+  sprintf(table[7].value, "%s", config->RC_model_outfile);
+  sprintf(table[8].value, "%s", leakage_vector);
+  sprintf(table[9].value, "%s", volt_vector);
+  sprintf(table[10].value, "%s", config->bm_infile);
 
-  return 6;
+  return 9;
 }
 
 /* 
@@ -222,6 +250,7 @@ int read_names(FILE *fp, char **names)
   return i;
 }
 
+
 /* read a single line of power trace numbers	*/
 int read_vals(FILE *fp, double *vals)
 {
@@ -256,6 +285,59 @@ int read_vals(FILE *fp, double *vals)
   return i;
 }
 
+/* read a single line of bank mode floats, needed for the low power mode.	*/
+int read_bank_modes(FILE *fp, float bank_modes[])
+{
+  /*
+  The headers of the bank modes will not be read. It is assumed that 
+  bank mode information is provided in sorted columns, starting with
+  bank 0 and incrementing 1 each column.  
+  */
+
+  char line[LINE_SIZE], temp[LINE_SIZE], *src;
+  float i;
+  char temp_status[10];
+  
+
+  /* skip empty lines	*/
+  do {
+      /* read the entire line	*/
+      fgets(line, LINE_SIZE, fp);
+      if (feof(fp))
+        return 0;
+      strcpy(temp, line);
+      src = strtok(temp, " \r\t\n");
+  } while (!src);
+  
+  fgets(line, LINE_SIZE, fp);
+
+  /* new line not read yet	*/	
+  if(line[strlen(line)-1] != '\n')
+  {
+    fatal("line too long\n");
+  }
+
+  /* chop the bank power mode values from the line read	*/
+  int banks_counted = 0;
+  int j = 0;
+  src = line;
+  while (*src && sscanf(src, "%f", &i))
+  {
+    bank_modes[j] = i;
+    banks_counted++;
+    // src += strlen(temp);
+    src += 4; // 4 places because the numbers are formatted as 1.xx
+    j++;
+    while (isspace((int)*src))
+    {
+      src++;
+    }
+  }
+
+  return banks_counted;
+}
+
+
 /* write a single line of functional unit names	*/
 void write_names(FILE *fp, char **names, int size)
 {
@@ -266,12 +348,30 @@ void write_names(FILE *fp, char **names, int size)
 }
 
 /* write a single line of temperature trace(in degree C)	*/
+void write_temp_vals(FILE *fp, double *vals, int size)
+{
+  int i;
+  for(i=0; i < size-1; i++)
+    fprintf(fp, "%.2f\t", vals[i]-273.15);
+  fprintf(fp, "%.2f\n", vals[i]-273.15);
+}
+
+/* write a single line of temperature trace(in degree C)	*/
 void write_vals(FILE *fp, double *vals, int size)
 {
   int i;
   for(i=0; i < size-1; i++)
     fprintf(fp, "%.2f\t", vals[i]-273.15);
   fprintf(fp, "%.2f\n", vals[i]-273.15);
+}
+
+/* write a single line of power trace(in degree W)	*/
+void write_pow_vals(FILE *fp, double *vals, int size)
+{
+  int i;
+  for(i=0; i < size-1; i++)
+    fprintf(fp, "%.5f\t", vals[i]);
+  fprintf(fp, "%.5f\n", vals[i]);
 }
 
 char **alloc_names(int nr, int nc)
@@ -313,9 +413,13 @@ int main(int argc, char **argv)
   int i, j, idx, base = 0, count = 0, n = 0;
   int num, size, lines = 0, do_transient = TRUE;
   char **names;
-  double *vals;
+  double *vals, *pvals;
+
+
+  float bank_modes[MAX_UNITS]; // Keep track of the bank modes for use in low power mode.
+  int banks_nr = 0;
   /* trace file pointers	*/
-  FILE *pin, *tout = NULL;
+  FILE *pin, *pout, *tout, *bmin = NULL;
   /* floorplan	*/
   flp_t *flp;
   /* hotspot temperature model	*/
@@ -341,6 +445,7 @@ int main(int argc, char **argv)
 
   /*BU_3D: variable for heterogenous R-C model */
   int do_detailed_3D = FALSE; //BU_3D: do_detailed_3D, false by default
+  int do_print_RC_model = FALSE; //Sobhan: To write matrices of the RC model into a text file, false by default
   if (!(argc >= 5 && argc % 2)) {
       usage(argc, argv);
       return 1;
@@ -422,6 +527,10 @@ for (i = 0; i < length_v; ++i)
       fatal("detailed_3D parameter should be either \'on\' or \'off\'\n");
   }//end->BU_3D
 
+  /* Sobhan: check if RC model printing is on */
+  if(strcmp(global_config.RC_model_outfile, NULLFILE))
+      do_print_RC_model = TRUE;
+
   /* get defaults */
   thermal_config = default_thermal_config();
   /* modify according to command line / config file	*/
@@ -469,6 +578,172 @@ for (i = 0; i < length_v; ++i)
   if (do_transient)
     populate_C_model(model, flp);
 
+  //Sobhan: Convert the grid model to an equivalent block model 
+  if(model->type == GRID_MODEL)
+  { 
+    int nl = model->grid->n_layers;
+    int nr = model->grid->rows;
+    int nc = model->grid->cols;
+    RC_model_t *temp_block = convert_grid2block(model);
+    model->block = temp_block->block;
+  }
+
+  if(do_print_RC_model)
+  {
+
+    int i, n, base = 0;
+    char str[STR_SIZE];
+    FILE *fp;	
+    fp = fopen (global_config.RC_model_outfile,"w");
+
+    if (!fp) {
+      sprintf (str,"error: %s could not be opened for writing\n", global_config.RC_model_outfile);
+      fatal(str);
+    }
+    if(model->type == BLOCK_MODEL){
+      /* number of functional units on the floorplan */
+      fprintf(fp, "%d\n", model->block->n_units);
+      /* number thermal nodes in the RC thermal model*/
+      fprintf(fp, "%d\n", model->block->n_nodes); 
+    }
+    else if(model->type == GRID_MODEL){
+
+      /* number of layers and some primary information about each layer*/
+      fprintf(fp, "%d\n", model->grid->n_layers);
+      for(int i=0; i<model->grid->n_layers; i++){
+        fprintf(fp, "%d\n", model->grid->layers[i].flp->n_units);
+        fprintf(fp, "%d\n", model->grid->layers[i].has_power);
+        for(int j=0; j<model->grid->layers[i].flp->n_units; j++){
+          fprintf(fp, "%s\n", model->grid->layers[i].flp->units[j].name);
+          fprintf(fp, "%d\n", model->grid->layers[i].g2bmap[j].i1);
+          fprintf(fp, "%d\n", model->grid->layers[i].g2bmap[j].j1);
+          fprintf(fp, "%d\n", model->grid->layers[i].g2bmap[j].i2);
+          fprintf(fp, "%d\n", model->grid->layers[i].g2bmap[j].j2);
+        }
+      }
+
+      /* number of layers for the primary path */
+      fprintf(fp, "%d\n", DEFAULT_PACK_LAYERS);
+
+      /* number of layers for the secondary path */
+      if(model->grid->config.model_secondary)
+        fprintf(fp, "%d\n", SEC_PACK_LAYERS);
+      else
+        fprintf(fp, "%d\n", 0);
+
+      /* number of grid rows */
+      fprintf(fp, "%d\n", model->grid->rows);
+
+      /* number of grid columns */
+      fprintf(fp, "%d\n", model->grid->cols);
+
+      /* number of functional units on the floorplan */
+      fprintf(fp, "%d\n", model->grid->total_n_blocks); 
+
+      /* number thermal nodes in the RC thermal model*/
+      fprintf(fp, "%d\n", model->block->n_nodes);
+
+      /*Number of extra thermal nodes */
+      int extra_nodes = EXTRA;
+      if(model->grid->config.model_secondary)
+        extra_nodes += EXTRA_SEC;
+      fprintf(fp, "%d\n", extra_nodes); 
+
+      for(int i=0; i<model->block->n_nodes; i++)
+        for(int j=0; j<model->block->n_nodes; j++)
+          fprintf(fp, "%lf\n", model->block->b[i][j]);
+
+      for(int i=0; i<model->block->n_nodes; i++)
+          fprintf(fp, "%lf\n", model->block->inva[i]);
+
+      for(int i=0; i<model->block->n_nodes; i++)
+        for(int j=0; j<model->block->n_nodes; j++)
+          fprintf(fp, "%lf\n", model->block->c[i][j]);
+      
+      for(int i=0; i<model->block->n_nodes; i++)
+          fprintf(fp, "%lf\n", model->block->g_amb[i]);
+
+      for(int i=0; i<model->block->n_nodes; i++)
+        for(int j=0; j<model->grid->total_n_blocks+extra_nodes; j++)
+          fprintf(fp, "%lf\n", model->block->g2b_power[i][j]);
+
+      for(int i=0; i<model->block->n_nodes; i++)
+        for(int j=0; j<model->grid->total_n_blocks+extra_nodes; j++)
+          fprintf(fp, "%lf\n", model->block->g2b_temp[i][j]);
+
+      fprintf(fp, "%d\n", model->grid->map_mode);
+    }
+    fclose(fp);	
+    printf("[HotSpot] thermal model file was generated.\n");
+    /*double x;
+    int v;
+    fp = fopen (global_config.RC_model_outfile,"r");
+    fscanf(fp, "%d\n", &v);
+    printf("%d != %d\n", v, model->block->n_units);
+    fscanf(fp, "%d\n", &v);    
+    printf("%d != %d\n", v, model->block->n_nodes);
+    for(int i=0; i<model->block->n_nodes; i++)
+        for(int j=0; j<model->block->n_nodes; j++)
+        {
+          fscanf(fp, "%lf", &x);
+          printf("%lf != %lf\n", x, model->block->b[i][j]);
+        }*/
+
+
+  }
+  //   if(!strcmp(global_config.t_outfile, NULLFILE))
+  //     fatal("Printing RC model can only be done when giving an output file name\n");
+    
+  //   FILE *fp;
+  //   fp = fopen(global_config.t_outfile, "w+");
+  //   fputs("This is testing for fputs...\n", fp);
+  
+	// 	if (fp != NULL){
+
+	// 		fputs((const char*)&model->block->base_n_units, fp);
+  //     model->grid->layers[0].
+	// 		//dumpFile.write((const char*)&rcModel.numberNodesAmbient, sizeof(int));
+	// 		//dumpFile.write((const char*)&rcModel.numberThermalNodes, sizeof(int));
+
+	// 		/*for(int unit = 0; unit < floorplan.getNumberFunctionalUnits(); unit++){
+	// 			dumpFile << floorplan.units[unit].name << endl;
+	// 		}
+
+	// 		for(int row = 0; row < rcModel.Binv.rows(); row++){
+	// 			for(int column = 0; column < rcModel.Binv.cols(); column++){
+	// 				dumpFile.write((const char*)&rcModel.Binv(row,column), sizeof(double));
+	// 			}
+	// 		}
+
+	// 		for(int row = 0; row < rcModel.Gamb.rows(); row++){
+	// 			dumpFile.write((const char*)&rcModel.Gamb(row), sizeof(double));
+	// 		}
+
+	// 		for(int row = 0; row < rcModel.numberThermalNodes; row++){
+	// 			dumpFile.write((const char*)&eigenValues[row], sizeof(double));
+	// 		}
+
+	// 		for(int row = 0; row < rcModel.numberThermalNodes; row++){
+	// 			for(int column = 0; column < rcModel.numberThermalNodes; column++){
+	// 				dumpFile.write((const char*)&eigenVectors[row][column], sizeof(double));
+	// 			}
+	// 		}
+
+	// 		for(int row = 0; row < rcModel.numberThermalNodes; row++){
+	// 			for(int column = 0; column < rcModel.numberThermalNodes; column++){
+	// 				dumpFile.write((const char*)&eigenVectorsInv[row][column], sizeof(double));
+	// 			}
+	// 		}
+
+	// 		if(dumpFile.good() == false){
+	// 			cout << "Error: There was an error writing to the eigenvalues and eigenvectors dump file: \"" << fileName << "\"." << endl;
+	// 			dumpFile.close();
+	// 			exit(1);
+	// 		}*/
+
+	// 		fclose(fp);
+	// 	}
+  // }
 #if VERBOSE > 2
   debug_print_model(model);
 #endif
@@ -506,6 +781,8 @@ for (i = 0; i < length_v; ++i)
 
   if(!(pin = fopen(global_config.p_infile, "r")))
     fatal("unable to open power trace input file\n");
+ if(!(pout = fopen(global_config.p_outfile, "w")))
+    fatal("unable to open power trace output file\n");
   if(do_transient && !(tout = fopen(global_config.t_outfile, "w")))
     fatal("unable to open temperature trace file for output\n");
 
@@ -514,12 +791,53 @@ for (i = 0; i < length_v; ++i)
   if(read_names(pin, names) != n)
     fatal("no. of units in floorplan and trace file differ\n");
 
+  // Count the number of banks. Necessary for low power mode.
+  for (int i = 0; i < n; i++)
+  {
+      if (strstr(names[i], "B_") != NULL)
+      {
+        banks_nr ++;
+      }
+
+  }
+  model->banks_nr = banks_nr;
+
   /* header line of temperature trace	*/
   if (do_transient)
     write_names(tout, names, n);
+  write_names(pout, names, n);
+
+  // If the memory bank power mode file is provided, we will use it.
+  if (strcmp(global_config.bm_infile, NULLFILE) != 0)
+  {
+    printf("[HOTSPOT] bank mode input file was defined.\n");
+
+    if(!(bmin = fopen(global_config.bm_infile, "r")))
+      fatal("unable to open bank mode input file\n");
+
+    // Read the bank modes into the bank_modes array.
+    read_bank_modes(bmin, bank_modes);
+
+  }
+  else
+  {
+    // Bank mode file was not provided. We will assume they are all in normal power mode.
+    for (int i; i < banks_nr; i++)
+    {
+      bank_modes[i] = 1.0;
+    }
+  }
+
+  // Copy bank modes to the model.
+  for (int i = 0; i < banks_nr; i++)
+  {
+    model->bank_modes[i] = bank_modes[i];
+  }
+  
 
   /* read the instantaneous power trace	*/
   vals = dvector(MAX_UNITS);
+  pvals = dvector(MAX_UNITS);
   while ((num=read_vals(pin, vals)) != 0) {
       if(num != n)
         fatal("invalid trace file format\n");
@@ -559,24 +877,31 @@ for (i = 0; i < length_v; ++i)
           else
             compute_temp(model, power, NULL, model->config->sampling_intvl);
 
+          
+          //fclose(pin);
           /* permute back to the trace file order	*/
           if (model->type == BLOCK_MODEL)
             for(i=0; i < n; i++)
               vals[i] = temp[get_blk_index(flp, names[i])];
-          else
+          else{
             for(i=0, base=0, count=0; i < model->grid->n_layers; i++) {
                 if(model->grid->layers[i].has_power) {
                     for(j=0; j < model->grid->layers[i].flp->n_units; j++) {
                         idx = get_blk_index(model->grid->layers[i].flp, names[count+j]);
                         vals[count+j] = temp[base+idx];
+                        pvals[count+j] = power[base+idx];
+                        //printf("(%s %d %lf)",names[count+j],count+j,pvals[count+j]); 
                     }
                     count += model->grid->layers[i].flp->n_units;	
                 }	
                 base += model->grid->layers[i].flp->n_units;	
             }
-
+          }
+  
+          ///* output instantaneous temperature trace	*/
+          write_pow_vals(pout, pvals, n);
           /* output instantaneous temperature trace	*/
-          write_vals(tout, vals, n);
+          write_temp_vals(tout, vals, n);
       }		
 
       /* for computing average	*/
@@ -677,7 +1002,6 @@ for (i = 0; i < length_v; ++i)
   fprintf(stdout, "Dumping transient temperatures for init in file %s\n", model->config->all_transient_file);
   fprintf(stdout, "Unit\tSteady(Kelvin)\n");
   dump_temp(model, temp, model->config->all_transient_file);
-
 
   /* cleanup	*/
   fclose(pin);

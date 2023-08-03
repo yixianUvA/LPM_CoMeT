@@ -10,10 +10,15 @@
 #include <vector>
 
 #include "scheduler_pinned_base.h"
+#include "thermalModel.h"
 #include "performance_counters.h"
 #include "policies/dvfspolicy.h"
 #include "policies/mappingpolicy.h"
 #include "policies/migrationpolicy.h"
+#include "policies/dramLowpower.h"
+#include "policies/drampolicy.h"
+#include "policies/dramStaticLow.h"
+#include "policies/coreMemDTM.h"
 
 
 //This data structure maintains the state of the tasks.
@@ -57,6 +62,10 @@ class SchedulerOpen : public SchedulerPinnedBase {
 		int coresInX;
 		int coresInY;
 		int coresInZ;
+		int numberOfBanks;
+		int banksInX;
+		int banksInY;
+		int banksInZ;
 
 		PerformanceCounters *performanceCounters;
 
@@ -97,6 +106,22 @@ class SchedulerOpen : public SchedulerPinnedBase {
 		int maxFrequency;
 		int frequencyStepSize;
 
+		// Dram
+		DramPolicy *dramPolicy = NULL;
+		long dramEpoch;
+		void initDramPolicy(String policyName);
+		void executeDramPolicy();
+		void setMemBankMode(int bankNr, int mode);
+
+		// coreMemDTM
+		coreMemDTM *coreMemDTMPolicy = NULL;
+		long coreMemDTMEpoch;
+		void initCoreMemDTM(String policyname);
+		void executeCoreMemDTMPolicy();
+
+		// Thermal model
+		ThermalModel *thermalModel;
+		
 		// migration
 		MigrationPolicy *migrationPolicy = NULL;
 		long migrationEpoch;

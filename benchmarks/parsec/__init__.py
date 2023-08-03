@@ -115,8 +115,7 @@ class Program:
       return 1
 
     flags = []
-    #rundir = tempfile.mkdtemp()
-    rundir = os.getcwd()
+    rundir = tempfile.mkdtemp()
 
     if self.program == 'facesim':
       # Facesim needs a {rundir}/Storytelling/output directory and tries to create it with a system() call
@@ -139,7 +138,7 @@ class Program:
                      ] + flags)
     proc.communicate()
 
-    #os.system('rm -r %(rundir)s' % locals())
+    os.system('rm -r %(rundir)s' % locals())
     return proc.returncode
 
   def rungraphiteoptions(self):

@@ -15,7 +15,12 @@
 
 #include "policies/dvfsConstFreq.h"
 #include "policies/dvfsOndemand.h"
+#include "policies/dvfsPB.h"
+#include "policies/dvfsDATE15.h"
 #include "policies/mapFirstUnused.h"
+
+#include "policies/dramLowpower.h"
+#include "policies/dramStaticLow.h"
 
 #include <iomanip>
 #include <random>
@@ -31,12 +36,14 @@ SchedulerOpen::SchedulerOpen(ThreadManager *thread_manager)
    , m_interleaving(Sim()->getCfg()->getInt("scheduler/pinned/interleaving"))
    , m_next_core(0) {
 
+
 	// Initialize config constants
 	minFrequency = (int)(1000 * Sim()->getCfg()->getFloat("scheduler/open/dvfs/min_frequency") + 0.5);
 	maxFrequency = (int)(1000 * Sim()->getCfg()->getFloat("scheduler/open/dvfs/max_frequency") + 0.5);
 	frequencyStepSize = (int)(1000 * Sim()->getCfg()->getFloat("scheduler/open/dvfs/frequency_step_size") + 0.5);
 	dvfsEpoch = atol(Sim()->getCfg()->getString("scheduler/open/dvfs/dvfs_epoch").c_str());
-
+	dramEpoch = atol(Sim()->getCfg()->getString("scheduler/open/dram/dram_epoch").c_str()); // Required for Dram policy.
+	coreMemDTMEpoch = atol(Sim()->getCfg()->getString("scheduler/open/coreMemDTM/coreMemDTM_epoch").c_str()); // Required for coreMemDTM policy.
 	migrationEpoch = atol(Sim()->getCfg()->getString("scheduler/open/migration/epoch").c_str());
 
 	m_core_mask.resize(Sim()->getConfig()->getApplicationCores());
@@ -51,16 +58,29 @@ SchedulerOpen::SchedulerOpen(ThreadManager *thread_manager)
 	arrivalInterval = atoi (Sim()->getCfg()->getString("scheduler/open/arrivalInterval").c_str());
 	numberOfTasks = Sim()->getCfg()->getInt("traceinput/num_apps");
 	numberOfCores = Sim()->getConfig()->getApplicationCores();
+	numberOfBanks = Sim()->getCfg()->getInt("memory/num_banks"); // Required for Dram policy.
+	double heat_trans_time = Sim()->getCfg()->getFloat("core_thermal/time");
 
 	coresInX = Sim()->getCfg()->getInt("memory/cores_in_x");
 	coresInY = Sim()->getCfg()->getInt("memory/cores_in_y");
 	coresInZ = Sim()->getCfg()->getInt("memory/cores_in_z");
+
+	banksInX = Sim()->getCfg()->getInt("memory/banks_in_x");
+	banksInY = Sim()->getCfg()->getInt("memory/banks_in_y");
+	banksInZ = Sim()->getCfg()->getInt("memory/banks_in_z");
 
 	performanceCounters = new PerformanceCounters(
 		Sim()->getCfg()->getString("hotspot/log_files/combined_instpower_trace_file").c_str(),
 		Sim()->getCfg()->getString("hotspot/log_files/combined_insttemperature_trace_file").c_str(),
 		"InstantaneousCPIStack.log");
 
+	//double ambientTemperature = Sim()->getCfg()->getFloat("core_thermal/ambient_temperature");
+    //double maxTemperature = Sim()->getCfg()->getFloat("core_thermal/max_temperature");
+    //double inactivePower = Sim()->getCfg()->getFloat("core_thermal/inactive_power");
+    //double tdp = Sim()->getCfg()->getFloat("core_thermal/tdp");
+	//thermalModel = new ThermalModel((unsigned int)gridLayers, (unsigned int)gridRows, (unsigned int)gridColumns, Sim()->getCfg()->getString("core_thermal/thermal_model"), ambientTemperature, maxTemperature, inactivePower, tdp);
+	thermalModel = NULL;
+	
 	//Initialize the cores in the system.
 	for (int coreIterator=0; coreIterator < numberOfCores; coreIterator++) {
 		systemCores.push_back (coreIterator);
@@ -117,9 +137,21 @@ SchedulerOpen::SchedulerOpen(ThreadManager *thread_manager)
  		exit (1);
 	}
 
+	std::fstream f;
+	f.open ("PeriodicPowerBudget.trace",std::ofstream::out);
+	f.clear();
+ 	for (int coreCounter = 0; coreCounter < numberOfCores; coreCounter++) {
+		if(coreCounter != 0)
+			f<<"	";
+		f<<"core"<<coreCounter;
+	}
+	f<<endl;
+
 	initMappingPolicy(Sim()->getCfg()->getString("scheduler/open/logic").c_str());
-	initDVFSPolicy(Sim()->getCfg()->getString("scheduler/open/dvfs/logic").c_str());
+	//initDVFSPolicy(Sim()->getCfg()->getString("scheduler/open/dvfs/logic").c_str());
 	initMigrationPolicy(Sim()->getCfg()->getString("scheduler/open/migration/logic").c_str());
+	initDramPolicy(Sim()->getCfg()->getString("scheduler/open/dram/logic").c_str());
+	initCoreMemDTM(Sim()->getCfg()->getString("scheduler/open/coreMemDTM/logic").c_str());
 }
 
 /** initMappingPolicy
@@ -144,6 +176,36 @@ void SchedulerOpen::initMappingPolicy(String policyName) {
  		exit (1);
 	}
 }
+
+void SchedulerOpen::initCoreMemDTM(String policyName){
+	if (policyName == "off") {
+		coreMemDTMPolicy = NULL;
+	} else if (policyName == "coreMemDTM") {
+		float upThreshold = Sim()->getCfg()->getFloat("scheduler/open/coreMemDTM/up_threshold");
+		float downThreshold = Sim()->getCfg()->getFloat("scheduler/open/coreMemDTM/down_threshold");
+		float dtmCriticalCoreTemperature = Sim()->getCfg()->getFloat("scheduler/open/coreMemDTM/dtm_cricital_core_temperature");
+		float dtmRecoveredCoreTemperature = Sim()->getCfg()->getFloat("scheduler/open/coreMemDTM/dtm_recovered_core_temperature");
+		float dtmCriticalMemTemperature = Sim()->getCfg()->getFloat("scheduler/open/coreMemDTM/dtm_critical_mem_temperature");
+		float dtmRecoveredMemTemperature = Sim()->getCfg()->getFloat("scheduler/open/coreMemDTM/dtm_recovered_mem_temperature");
+		coreMemDTMPolicy = new coreMemDTM(performanceCounters,
+			numberOfCores,
+			numberOfBanks,
+			minFrequency,
+			maxFrequency,
+			frequencyStepSize,
+			upThreshold,
+			downThreshold,
+			dtmCriticalCoreTemperature,
+			dtmRecoveredCoreTemperature,
+			dtmCriticalMemTemperature,
+			dtmRecoveredMemTemperature);
+	}
+	else {
+		cout << "\n[Scheduler] [Error]: Unknown DVFS Algorithm" << endl;
+ 		exit (1);
+	}
+}
+
 
 /** initDVFSPolicy
  * Initialize the DVFS policy to the policy with the given name
@@ -171,8 +233,29 @@ void SchedulerOpen::initDVFSPolicy(String policyName) {
 			downThreshold,
 			dtmCriticalTemperature,
 			dtmRecoveredTemperature
-		);
-	} //else if (policyName ="XYZ") {... } //Place to instantiate a new DVFS logic. Implementation is put in "policies" package.
+		); 
+	} 
+	else if (policyName == "date15") {
+		float upThreshold = Sim()->getCfg()->getFloat("scheduler/open/dvfs/date15/up_threshold");
+		float downThreshold = Sim()->getCfg()->getFloat("scheduler/open/dvfs/date15/down_threshold");
+		float dtmCriticalTemperature = Sim()->getCfg()->getFloat("scheduler/open/dvfs/date15/dtm_cricital_temperature");
+		float dtmRecoveredTemperature = Sim()->getCfg()->getFloat("scheduler/open/dvfs/date15/dtm_recovered_temperature");
+		dvfsPolicy = new DVFSDATE15(
+			performanceCounters,
+			numberOfCores,
+			minFrequency,
+			maxFrequency,
+			frequencyStepSize,
+			upThreshold,
+			downThreshold,
+			dtmCriticalTemperature,
+			dtmRecoveredTemperature
+		); 
+	} 	
+	else if (policyName == "tsp" || policyName == "ttsp") {
+		std::string method = Sim()->getCfg()->getString("core_thermal/method").c_str();
+		dvfsPolicy = new DVFSPB(policyName.c_str(), thermalModel, performanceCounters, numberOfCores, minFrequency, maxFrequency, frequencyStepSize, method);
+	}//else if (policyName ="XYZ") {... } //Place to instantiate a new DVFS logic. Implementation is put in "policies" package.
 	else {
 		cout << "\n[Scheduler] [Error]: Unknown DVFS Algorithm" << endl;
  		exit (1);
@@ -874,6 +957,73 @@ void SchedulerOpen::setFrequency(int coreCounter, int frequency) {
 	}
 }
 
+void SchedulerOpen::executeCoreMemDTMPolicy(){
+	float dtmCriticalCoreTemperature = Sim()->getCfg()->getFloat("scheduler/open/coreMemDTM/dtm_cricital_core_temperature");
+	float dtmRecoveredCoreTemperature = Sim()->getCfg()->getFloat("scheduler/open/coreMemDTM/dtm_recovered_core_temperature");
+	float dtmCriticalMemTemperature = Sim()->getCfg()->getFloat("scheduler/open/coreMemDTM/dtm_critical_mem_temperature");
+	float dtmRecoveredMemTemperature = Sim()->getCfg()->getFloat("scheduler/open/coreMemDTM/dtm_recovered_mem_temperature");
+	double corePeak = performanceCounters->getCorePeakTemperature();
+	double memPeak = performanceCounters->getMemPeakTemperature();
+	//memDTM
+	if (corePeak < dtmCriticalCoreTemperature && memPeak > dtmCriticalMemTemperature) {
+		std::map<int,int> old_bank_modes;
+		for (int i = 0; i < numberOfBanks; i++)
+		{
+			old_bank_modes[i] = Sim()->m_bank_modes[i];
+		}
+
+		std::map<int,int> new_bank_modes = coreMemDTMPolicy->getNewBankModes(old_bank_modes);
+
+		for (int i = 0; i < numberOfBanks; i++)
+		{
+			setMemBankMode(i, new_bank_modes[i]);
+		}
+
+	}//coreDTM
+	else if(corePeak > dtmCriticalCoreTemperature && memPeak < dtmCriticalMemTemperature){
+		std::vector<int> oldFrequencies;
+		std::vector<bool> activeCores;
+		for (int coreCounter = 0; coreCounter < numberOfCores; coreCounter++) {
+			oldFrequencies.push_back(Sim()->getMagicServer()->getFrequency(coreCounter));
+			activeCores.push_back(isAssignedToThread(coreCounter));
+		}
+		vector<int> frequencies = coreMemDTMPolicy->getFrequencies(oldFrequencies, activeCores);
+		for (int coreCounter = 0; coreCounter < numberOfCores; coreCounter++) {
+			setFrequency(coreCounter, frequencies.at(coreCounter));
+		}
+		performanceCounters->notifyFreqsOfCores(frequencies);
+
+	}//CoreMemDTM
+	else if(corePeak > dtmCriticalCoreTemperature && memPeak > dtmCriticalMemTemperature){
+		std::vector<int> oldFrequencies;
+		std::vector<bool> activeCores;
+		for (int coreCounter = 0; coreCounter < numberOfCores; coreCounter++) {
+			oldFrequencies.push_back(Sim()->getMagicServer()->getFrequency(coreCounter));
+			activeCores.push_back(isAssignedToThread(coreCounter));
+		}
+		vector<int> frequencies = coreMemDTMPolicy->getFrequencies(oldFrequencies, activeCores);
+		for (int coreCounter = 0; coreCounter < numberOfCores; coreCounter++) {
+			setFrequency(coreCounter, frequencies.at(coreCounter));
+		}
+		performanceCounters->notifyFreqsOfCores(frequencies);
+		std::map<int,int> old_bank_modes;
+		for (int i = 0; i < numberOfBanks; i++)
+		{
+			old_bank_modes[i] = Sim()->m_bank_modes[i];
+		}
+
+		std::map<int,int> new_bank_modes = coreMemDTMPolicy->getNewBankModes(old_bank_modes);
+
+		for (int i = 0; i < numberOfBanks; i++)
+		{
+			setMemBankMode(i, new_bank_modes[i]);
+		}
+
+	}
+	
+
+}
+
 
 /** executeDVFSPolicy
  * Set DVFS levels according to the used policy.
@@ -890,6 +1040,65 @@ void SchedulerOpen::executeDVFSPolicy() {
 		setFrequency(coreCounter, frequencies.at(coreCounter));
 	}
 	performanceCounters->notifyFreqsOfCores(frequencies);
+}
+
+/** initDramPolicy
+ * Initialize the Dram policy to the policy with the given name
+ */
+void SchedulerOpen::initDramPolicy(String policyName) {
+	if (policyName == "off") {
+		dramPolicy = NULL;
+	} else if (policyName == "lowpower") {
+
+		float dtmCriticalTemperature = Sim()->getCfg()->getFloat("scheduler/open/dram/dtm/dtm_critical_temperature");
+		float dtmRecoveredTemperature = Sim()->getCfg()->getFloat("scheduler/open/dram/dtm/dtm_recovered_temperature");
+		dramPolicy = new DramLowpower(
+			performanceCounters,
+			numberOfBanks,
+			dtmCriticalTemperature,
+			dtmRecoveredTemperature
+		);
+	} //else if (policyName ="XYZ") {... } // Place to instantiate a new memory DTM logic. Implementation is put in "policies" package.
+	else if (policyName == "staticlow") {
+
+		float dtmCriticalTemperature = Sim()->getCfg()->getFloat("scheduler/open/dram/dtm/dtm_critical_temperature");
+		float dtmRecoveredTemperature = Sim()->getCfg()->getFloat("scheduler/open/dram/dtm/dtm_recovered_temperature");
+		float offBankNumber = Sim()->getCfg()->getFloat("scheduler/open/dram/dtm/off_bank_number");
+		dramPolicy = new DramStaticLow (
+			performanceCounters,
+			numberOfBanks,
+			dtmCriticalTemperature,
+			dtmRecoveredTemperature,
+			offBankNumber
+		);
+	}
+	else {
+		cout << "\n[Scheduler] [Error]: Unknown Dram Algorithm" << endl;
+ 		exit (1);
+	}
+}
+
+
+
+void SchedulerOpen::executeDramPolicy()
+{
+	std::map<int,int> old_bank_modes;
+    for (int i = 0; i < numberOfBanks; i++)
+	{
+		old_bank_modes[i] = Sim()->m_bank_modes[i];
+	}
+
+	std::map<int,int> new_bank_modes = dramPolicy->getNewBankModes(old_bank_modes);
+
+    for (int i = 0; i < numberOfBanks; i++)
+	{
+		setMemBankMode(i, new_bank_modes[i]);
+	}
+}
+
+void SchedulerOpen::setMemBankMode(int bankNr, int mode)
+{
+	Sim()->m_bank_modes[bankNr] = mode;
 }
 
 /** executeMigrationPolicy
@@ -957,7 +1166,7 @@ void SchedulerOpen::executeMigrationPolicy(SubsecondTime time) {
 	}
 }
 
-
+//int cycle = 0;
 /** periodic
     This function is called periodically by Sniper at Interval of 100ns.
 */
@@ -978,18 +1187,59 @@ void SchedulerOpen::periodic(SubsecondTime time) {
 		}
 	}
 
+    if(thermalModel == NULL) 
+	{
+		ifstream file(Sim()->getCfg()->getString("core_thermal/thermal_model").c_str());
+		if(file)
+		{
+			cout << "\n[Scheduler][Thermal Model]: Thermal model is being read at " << formatTime(time) << endl;
+			double ambientTemperature = Sim()->getCfg()->getFloat("core_thermal/ambient_temperature");
+    		double maxTemperature = Sim()->getCfg()->getFloat("core_thermal/max_temperature");
+    		double inactivePower = Sim()->getCfg()->getFloat("core_thermal/inactive_power");
+    		double tdp = Sim()->getCfg()->getFloat("core_thermal/tdp");
+			double heat_trans_time = Sim()->getCfg()->getFloat("core_thermal/time");
+			thermalModel = new ThermalModel(Sim()->getCfg()->getString("core_thermal/thermal_model"), Sim()->getCfg()->getString("core_thermal/transient_temperature_file"), ambientTemperature, maxTemperature, inactivePower, tdp, heat_trans_time);
+			initDVFSPolicy(Sim()->getCfg()->getString("scheduler/open/dvfs/logic").c_str());
+		}
+		/*else if(cycle == 0)
+		{	cycle++;
+			std::cout << "\nThermal model does not exist" << std::endl;
+			cout << "[Scheduler][Thermal Model]: Generating thermal model ..."<<endl;
+		}*/
+		
+	}
+
 	if ((migrationPolicy != NULL) && (time.getNS() % migrationEpoch == 0)) {
 		cout << "\n[Scheduler]: Migration invoked at " << formatTime(time) << endl;
 
 		executeMigrationPolicy(time);
 	}
 
-	if ((dvfsPolicy != NULL) && (time.getNS() % dvfsEpoch == 0)) {
+	//if ((thermalModel != NULL) && (dvfsPolicy != NULL) && (time.getNS() % dvfsEpoch == 0)) {
+	if ((dvfsPolicy != NULL) && (time.getNS() % dvfsEpoch == 0)){ //&& time.getNS()!= 1000000) {
 		cout << "\n[Scheduler]: DVFS Control Loop invoked at " << formatTime(time) << endl;
 
 		executeDVFSPolicy();
 	}
+	/*if(time.getNS()== 1000000){
+		for (int coreCounter = 0; coreCounter < numberOfCores; coreCounter++)
+			setFrequency(coreCounter, minFrequency);
+	}*/
+	//if(dvfsPolicy == NULL){
+	//	initDVFSPolicy(Sim()->getCfg()->getString("scheduler/open/dvfs/logic").c_str());
+	//}
 
+	if ((dramPolicy != NULL) && (time.getNS() % dramEpoch == 0)) {
+		cout << "\n[Scheduler]: Dram Control Loop invoked at " << formatTime(time) << endl;
+
+		executeDramPolicy();
+	}
+
+	if ((coreMemDTMPolicy != NULL) && (time.getNS() % coreMemDTMEpoch == 0)) {
+		cout << "\n[Scheduler]: CoreMemDTMEpoch Control Loop invoked at " << formatTime(time) << endl;
+
+		executeCoreMemDTMPolicy();
+	}
 	if (time.getNS () % mappingEpoch == 0) {
 		
 		cout << "\n[Scheduler]: Scheduler Invoked at " << formatTime(time) << "\n" << endl;
